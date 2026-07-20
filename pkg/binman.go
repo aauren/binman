@@ -10,12 +10,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/go-github/v50/github"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rjbrown57/binman/pkg/constants"
 	db "github.com/rjbrown57/binman/pkg/db"
 	"github.com/rjbrown57/binman/pkg/downloader"
+	"github.com/rjbrown57/binman/pkg/gh"
+	"github.com/rjbrown57/binman/pkg/gl"
 	log "github.com/rjbrown57/binman/pkg/logging"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
 )
 
 const timeout = 60 * time.Second
@@ -77,6 +81,11 @@ type BMConfig struct {
 	msgChan      chan BinmanMsg
 	downloadChan chan downloader.DlMsg
 	wg           sync.WaitGroup
+
+	// Shared per-source API clients, keyed by source name. Built once so we
+	// stop minting a fresh client per repo.
+	ghClients map[string]*github.Client
+	glClients map[string]*gitlab.Client
 }
 
 // For running the default sync
@@ -240,8 +249,44 @@ func (config *BMConfig) SetConfig(merge bool) *BMConfig {
 	return config
 }
 
+// setupClients builds one shared API client per configured source. Clients are
+// safe for concurrent use, so we build them once and share them across all repos
+// rather than constructing a new client for every release.
+func (config *BMConfig) setupClients() {
+
+	if config.ghClients == nil {
+		config.ghClients = make(map[string]*github.Client)
+	}
+	if config.glClients == nil {
+		config.glClients = make(map[string]*gitlab.Client)
+	}
+
+	for name, source := range config.Config.SourceMap {
+		switch source.Apitype {
+		case "github":
+			if _, ok := config.ghClients[name]; !ok {
+				config.ghClients[name] = gh.GetGHCLient(source.URL, source.Tokenvar)
+			}
+		case "gitlab":
+			if _, ok := config.glClients[name]; !ok {
+				config.glClients[name] = gl.GetGLClient(source.URL, source.Tokenvar)
+			}
+		}
+	}
+}
+
 // Execute will collect data and execute any requested steps
 func (config *BMConfig) CollectData() {
+
+	config.setupClients()
+
+	// Assign the shared per-source client to each release before we fan out.
+	for i := range config.Releases {
+		if s := config.Releases[i].source; s != nil {
+			config.Releases[i].ghClient = config.ghClients[s.Name]
+			config.Releases[i].glClient = config.glClients[s.Name]
+		}
+	}
 
 	c := make(chan BinmanMsg)
 
