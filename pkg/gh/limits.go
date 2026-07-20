@@ -32,17 +32,15 @@ func ShowLimits(ghClient *github.Client) error {
 	return nil
 }
 
-// CheckLimits will verify you have not exceeded your quota
-func CheckLimits(ghClient *github.Client) error {
+// GetRateLimit returns the remaining and total core API quota for the client's
+// token. Hitting this endpoint does not count against the primary rate limit,
+// so we use it for a cheap, non-fatal pre-flight check.
+func GetRateLimit(ghClient *github.Client) (remaining int, limit int, err error) {
 
 	limits, err := getLimits(ghClient)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 
-	if limits.Core.Remaining == 0 {
-		log.Fatalf("Github API limits exceeded. %s", limits.Core.String())
-	}
-
-	return nil
+	return limits.Core.Remaining, limits.Core.Limit, nil
 }

@@ -274,6 +274,41 @@ func (config *BMConfig) setupClients() {
 	}
 }
 
+// checkQuota does a single, non-fatal pre-flight check comparing the number of
+// configured github repos against the token's remaining API quota. We only warn:
+// the real release calls surface actual rate-limit errors on their own, and the
+// /rate_limit endpoint itself can be flaky, so it must never abort the run.
+func (config *BMConfig) checkQuota() {
+
+	ghClient, ok := config.ghClients[config.Config.SourceMap["github.com"].Name]
+	if !ok {
+		return
+	}
+
+	var ghRepos int
+	for i := range config.Releases {
+		if s := config.Releases[i].source; s != nil && s.Apitype == "github" {
+			ghRepos++
+		}
+	}
+
+	if ghRepos == 0 {
+		return
+	}
+
+	remaining, limit, err := gh.GetRateLimit(ghClient)
+	if err != nil {
+		log.Warnf("Unable to check GitHub API rate limits, continuing anyway: %v", err)
+		return
+	}
+
+	log.Debugf("GitHub API quota: %d/%d remaining", remaining, limit)
+
+	if ghRepos > remaining {
+		log.Warnf("%d github repos are configured but only %d GitHub API requests remain (quota resets hourly). Some repos may fail this run.", ghRepos, remaining)
+	}
+}
+
 // Execute will collect data and execute any requested steps
 func (config *BMConfig) CollectData() {
 
@@ -286,6 +321,8 @@ func (config *BMConfig) CollectData() {
 			config.Releases[i].glClient = config.glClients[s.Name]
 		}
 	}
+
+	config.checkQuota()
 
 	c := make(chan BinmanMsg)
 
