@@ -108,6 +108,7 @@ func NewGet(r ...BinmanRelease) *BMConfig {
 	c = c.WithDownloader().WithOutput(false, true)
 	c.SetDefaults()
 	c.populateReleases()
+	c.startDownloaders()
 
 	return c
 }
@@ -185,18 +186,31 @@ func (config *BMConfig) WithDb(dbConfig ...db.DbConfig) *BMConfig {
 
 func (config *BMConfig) WithDownloader() *BMConfig {
 	config.downloadChan = make(chan downloader.DlMsg)
+	return config
+}
 
-	if config.Config.NumWorkers == 0 {
-		config.Config.NumWorkers = 1
+// startDownloaders spawns the download worker pool. This must run after the
+// config has been parsed, because WithDownloader is chained before SetConfig
+// and NumWorkers only holds the user's maxdownloads once the yaml is read.
+// Spawning here instead of in WithDownloader is what lets the pool actually
+// honor maxdownloads.
+func (config *BMConfig) startDownloaders() {
+
+	// Callers like NewQuery never attach a downloader, so there is no pool to start
+	if config.downloadChan == nil {
+		return
 	}
 
-	log.Debugf("launching %d download workers", config.Config.NumWorkers)
+	workers := config.Config.NumWorkers
+	if workers < 1 {
+		workers = 1
+	}
 
-	for worker := 1; worker <= config.Config.NumWorkers; worker++ {
+	log.Debugf("launching %d download workers", workers)
+
+	for worker := 1; worker <= workers; worker++ {
 		go downloader.GetDownloader(config.downloadChan, worker)
 	}
-
-	return config
 }
 
 // setWatchConfig sets config/releases for watch subcommand
@@ -244,6 +258,9 @@ func (config *BMConfig) SetConfig(merge bool) *BMConfig {
 	config.SetDefaults()
 	config.cleanReleases()
 	config.populateReleases()
+
+	// SetDefaults has finalized NumWorkers by this point, so the pool is sized correctly
+	config.startDownloaders()
 
 	return config
 }
