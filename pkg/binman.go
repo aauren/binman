@@ -345,9 +345,14 @@ func (config *BMConfig) CollectData() {
 
 	var wg sync.WaitGroup
 
-	// Bound the get phase to NumWorkers so we don't fire one unbounded API
+	// Bound the get phase to NumAPIWorkers so we don't fire one unbounded API
 	// request per repo, which is what trips GitHub's rate and abuse limits.
-	workers := config.Config.NumWorkers
+	// It falls back to NumWorkers so maxapiqueries stays optional, while users
+	// with many repos can widen the query fanout without widening downloads.
+	workers := config.Config.NumAPIWorkers
+	if workers < 1 {
+		workers = config.Config.NumWorkers
+	}
 	if workers < 1 {
 		workers = len(config.Releases)
 	}
