@@ -29,8 +29,7 @@ const timeout = 60 * time.Second
 // Pre -> Post -> Os -> Final
 // The last action of each phase sets the actions for the next phase
 // The Final actions is to set rel.actions = nil and conclude the loop
-func goSyncRepo(rel BinmanRelease, c chan<- BinmanMsg, wg *sync.WaitGroup) {
-	defer wg.Done()
+func goSyncRepo(rel BinmanRelease, c chan<- BinmanMsg) {
 
 	var err error
 
@@ -292,10 +291,34 @@ func (config *BMConfig) CollectData() {
 
 	var wg sync.WaitGroup
 
-	for _, rel := range config.Releases {
-		wg.Add(1)
-		go goSyncRepo(rel, c, &wg)
+	// Bound the get phase to NumWorkers so we don't fire one unbounded API
+	// request per repo, which is what trips GitHub's rate and abuse limits.
+	workers := config.Config.NumWorkers
+	if workers < 1 {
+		workers = len(config.Releases)
 	}
+	if workers < 1 {
+		workers = 1
+	}
+
+	jobs := make(chan BinmanRelease)
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for rel := range jobs {
+				goSyncRepo(rel, c)
+			}
+		}()
+	}
+
+	go func() {
+		for _, rel := range config.Releases {
+			jobs <- rel
+		}
+		close(jobs)
+	}()
 
 	go func(c chan BinmanMsg, wg *sync.WaitGroup) {
 		wg.Wait()
